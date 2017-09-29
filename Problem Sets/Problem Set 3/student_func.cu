@@ -80,6 +80,114 @@
 */
 
 #include "utils.h"
+#include <float.h>
+#include <stdio.h>
+
+__global__
+void reduce_minmax_kernel(const float* const d_in, float* d_out, const size_t size, int minmax)
+{
+  //sdata is allocated in the kernelcall: 3rd arg to<<<b,t,shmem>>>
+  extern __shared__ float sdata[];
+  const int v_idx = threadIdx.x + blockIdx.x *blockDim.x;
+  const int idx = threadIdx.x;
+  const int b_idx = blockIdx.x;
+  
+  //load shared mem from global mem
+  if(v_idx >= size){
+     sdata[idx] = (minmax==0) ? FLT_MAX : -FLT_MAX;
+     } else{
+     sdata[idx] = d_in[v_idx];
+     }
+  __syncthreads(); //wait for all threads per block
+
+    if(v_idx >= size) {   
+        if(idx == 0) {
+            d_out[b_idx] = minmax == 0 ? FLT_MAX: -FLT_MAX;
+        }
+        return;
+}
+  
+  for(unsigned int s = blockDim.x/2; s>0; s/=2 ){
+     if (idx<s){
+        sdata[idx]= (minmax==0)?(min(sdata[idx],sdata[idx+s])):(max(sdata[idx],sdata[idx+s]));
+     }
+
+     __syncthreads(); 
+  }
+  if(idx==0){
+     d_out[b_idx]= sdata[0];
+  }
+}
+
+int get_max_size(int n, int d) {
+    return (int)ceil((float)n/(float)d) + 1;
+}
+
+float reduce_minmax(const float* const d_in, const size_t size, int minmax){
+   unsigned int block_size = 64;
+   size_t step_size=size;
+   float* d_step_in;
+   float* d_step_out;
+   
+   checkCudaErrors(cudaMalloc(&d_step_in, sizeof(float)*step_size));
+   checkCudaErrors(cudaMemcpy(d_step_in, d_in, sizeof(float)*step_size, cudaMemcpyDeviceToDevice));
+
+   dim3 thread_dim(block_size);
+   const int shared_mem_size = sizeof(float) * block_size;
+   int block_n;
+
+   while(1){
+      block_n = get_max_size(step_size, block_size); 
+      checkCudaErrors(cudaMalloc(&d_step_out, sizeof(float)*block_n));
+      dim3 block_dim(get_max_size(size, block_size));
+      reduce_minmax_kernel<<<block_dim, thread_dim, shared_mem_size>>>(d_step_in,d_step_out, step_size, minmax);
+      cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+
+      checkCudaErrors(cudaFree(d_step_in));
+      d_step_in = d_step_out;//output of the current step will be the input of next step
+      if(step_size < block_size)
+         break;
+      step_size = block_n;
+
+   }
+
+   float h_out;
+   checkCudaErrors(cudaMemcpy(&h_out, d_step_out, sizeof(float), cudaMemcpyDeviceToHost));
+   checkCudaErrors(cudaFree(d_step_out));
+   return h_out; 
+}
+
+__global__
+void histogram_kernel(const float* d_in, unsigned int* d_hist, const int num_Bins, const float lum_min, const float lum_max, const size_t size) {  
+    int idx = threadIdx.x + blockDim.x * blockIdx.x;
+    if(idx >= size)
+        return;
+    float lum_range = lum_max - lum_min;
+    int bin = ((d_in[idx]-lum_min) / lum_range) * num_Bins;    
+    atomicAdd(&d_hist[bin], 1);
+}
+
+__global__ 
+void scan_kernel(unsigned int* d_hist, size_t size) {
+    //HIllis Steels: inclusive scan(cdf should be)
+    int idx = threadIdx.x + blockDim.x * blockIdx.x;
+    if(idx >= size)
+        return;
+    
+    for(int s = 1; s < size; s *= 2) {
+          int left = idx - s; 
+         
+          unsigned int val = 0;
+          if(left >= 0)
+              val = d_hist[left];
+
+          __syncthreads();
+          if(left >= 0)
+              d_hist[idx] += val;  // cdf 
+          __syncthreads();
+
+    }
+}
 
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
@@ -99,6 +207,28 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
     4) Perform an exclusive scan (prefix sum) on the histogram to get
        the cumulative distribution of luminance values (this should go in the
        incoming d_cdf pointer which already has been allocated for you)       */
+    const size_t size = numRows * numCols;
+    min_logLum = reduce_minmax(d_logLuminance, size, 0);
+    max_logLum = reduce_minmax(d_logLuminance, size, 1);
+    printf("min of %f\n", min_logLum);
+    printf("max of %f\n", max_logLum);
 
+    //(3)
+    size_t thread_num = 1024;
+    dim3 thread_dim(thread_num);
+    dim3 hist_block_dim(get_max_size(size, thread_dim.x));
+    
+    unsigned int* d_hist;
+    checkCudaErrors(cudaMalloc(&d_hist, sizeof(unsigned int)*numBins));
+    checkCudaErrors(cudaMemset(d_hist, 0, sizeof(unsigned int)*numBins));
+    histogram_kernel<<<hist_block_dim, thread_dim>>>(d_logLuminance, d_hist, numBins, min_logLum, max_logLum, size);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+    //(4)
+    printf("thread_dimx%d\n",thread_dim.x);
+    dim3 scan_block_dim(get_max_size(numBins, thread_dim.x));
+    scan_kernel<<<scan_block_dim, thread_dim>>>(d_hist, numBins);
+    cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+    cudaMemcpy(d_cdf, d_hist, sizeof(unsigned int)*numBins, cudaMemcpyDeviceToDevice);
+    checkCudaErrors(cudaFree(d_hist));
 
 }
