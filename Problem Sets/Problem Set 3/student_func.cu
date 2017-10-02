@@ -169,7 +169,7 @@ void histogram_kernel(const float* d_in, unsigned int* d_hist, const int num_Bin
 
 __global__ 
 void scan_kernel(unsigned int* d_hist, size_t size) {
-    //HIllis Steels: inclusive scan(cdf should be)
+    //HIllis Steels
     int idx = threadIdx.x + blockDim.x * blockIdx.x;
     if(idx >= size)
         return;
