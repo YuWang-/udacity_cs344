@@ -83,7 +83,7 @@ __global__ void histogram_final_accum(const unsigned int *in, unsigned int* out,
  void histogram_shared_atomics_kernel(const unsigned int* const d_vals, unsigned int *d_Histo, 
 																			const unsigned int numBins, const unsigned int numElems) { 
 	int thread_num = 1024;
-  int NUM_PARTS = 2000;
+  int NUM_PARTS = 50;  //100 is the fatest among [10,50, 100,200,1000]
 	
 	unsigned int gridSize = (numElems + thread_num * NUM_PARTS - 1)/(thread_num * NUM_PARTS) ; 
 	printf("gridSize: %d \n", gridSize);
@@ -98,7 +98,7 @@ __global__ void histogram_final_accum(const unsigned int *in, unsigned int* out,
 	
 	histogram_smem_atomics<<<gridSize, thread_num, numBins * sizeof(unsigned int)>>>(d_vals, d_PartialHisto, numBins, numElems, NUM_PARTS) ;
 
-	checkCudaErrors(cudaMemcpy(&h_PartialHisto, d_PartialHisto, numBins*gridSize*sizeof(unsigned int), cudaMemcpyDeviceToHost));
+	/* checkCudaErrors(cudaMemcpy(&h_PartialHisto, d_PartialHisto, numBins*gridSize*sizeof(unsigned int), cudaMemcpyDeviceToHost));
 	  printf("numEle: %d, numBins: %d \n", numElems,numBins);
 	for(int pass=0;pass<gridSize;pass++){
 		printf("pass: %d\n", pass);
@@ -107,6 +107,7 @@ __global__ void histogram_final_accum(const unsigned int *in, unsigned int* out,
 		}
 		printf("\n");
   }
+*/
 	
 	histogram_final_accum<<<1, numBins>>>(d_PartialHisto, d_Histo, numBins, gridSize) ;
 		
@@ -119,12 +120,7 @@ void computeHistogram(const unsigned int* const d_vals, //INPUT
                       const unsigned int numBins,
                       const unsigned int numElems)
 {
-  unsigned int* h_hist[numBins];
+
 	histogram_shared_atomics_kernel(d_vals, d_histo, numBins, numElems);
-  checkCudaErrors(cudaMemcpy(&h_hist, d_histo, numBins*sizeof(unsigned int), cudaMemcpyDeviceToHost));
-  printf("numEle: %d, hist \n", numElems);
-  for(int pass=0;pass<numBins; pass++){
-		// printf("%d ", h_hist[pass]);
-  }
-  printf("\n");    
+    
 }
