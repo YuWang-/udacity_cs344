@@ -38,14 +38,14 @@ int main(int argc, char **argv) {
   std::string reference_file;
   double perPixelError = 0.0;
   double globalError   = 0.0;
-  bool useEpsCheck = false;
+  bool useEpsCheck = true;
 
   switch (argc)
   {
   	case 3:
   	  input_source_file  = std::string(argv[1]);
   	  input_dest_file = std::string(argv[2]);
-      output_file = "HW6_output.png";
+	  output_file = "HW6_output.png";
   	  reference_file = "HW6_reference.png";
   	  break;
   	case 4:
